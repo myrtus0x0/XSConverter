@@ -8,7 +8,7 @@ use nom::number::complete::{le_u16, le_u32};
 use nom::sequence::tuple;
 use nom::IResult;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct XsModule {
     magic: u16,
     nt_magic: u16,
@@ -18,18 +18,27 @@ struct XsModule {
     unk1: u16,
     module_size: u32,
     entry_point: u32,
-    import_header: Option<XsDataDir>,
-    exception_header: Option<XsDataDir>,
-    reloc_header: Option<XsDataDir>, // sections
+    import_header: XsDataDir,
+    exception_header: XsDataDir,
+    reloc_header: XsDataDir,
+    sections: Vec<XsSection>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
+struct XsSection {
+    rva: u32,
+    raw: u32,
+    size: u32,
+    flags: u32,
+}
+
+#[derive(Debug, Default)]
 struct XsDataDir {
     size: u32,
     rva: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct XsImports {
     dll_name_rva: u32,
     first_thunk: u32,
@@ -42,14 +51,25 @@ impl XsModule {
         let (remaining_data, mut module) = Self::parse_header(module_buffer).unwrap();
 
         let (remaining_data, import_header) = Self::parse_data_table(remaining_data).unwrap();
-        module.import_header = Some(import_header);
+        module.import_header = import_header;
 
         let (remaining_data, exception_header) = Self::parse_data_table(remaining_data).unwrap();
-        module.exception_header = Some(exception_header);
+        module.exception_header = exception_header;
 
         let (remaining_data, reloc_header) = Self::parse_data_table(remaining_data).unwrap();
-        module.reloc_header = Some(reloc_header);
+        module.reloc_header = reloc_header;
 
+        let (remaining_data, sections) =
+            Self::parse_sections(module.section_count as usize, remaining_data).unwrap();
+
+        if module_buffer.len() - remaining_data.len() != module.hdr_size as usize {
+            dbg!(
+                "still more header to parse: {}",
+                module_buffer.len() - remaining_data.len()
+            );
+        } else {
+            dbg!("no more header data!");
+        }
         Ok(module)
     }
 
@@ -76,9 +96,10 @@ impl XsModule {
                 unk1,
                 module_size,
                 entry_point,
-                import_header: None,
-                exception_header: None,
-                reloc_header: None,
+                import_header: XsDataDir::default(),
+                exception_header: XsDataDir::default(),
+                reloc_header: XsDataDir::default(),
+                sections: Vec::new(),
             },
         )(module_buffer)
     }
@@ -100,6 +121,23 @@ impl XsModule {
                 dll_length,
             },
         )(import_buffer)
+    }
+
+    fn parse_sections(
+        num_sections: usize,
+        section_buffer: &[u8],
+    ) -> IResult<&[u8], Vec<XsSection>> {
+        many_m_n(1, num_sections, |current_section| {
+            map(
+                tuple((le_u32, le_u32, le_u32, le_u32)),
+                |(rva, raw, size, flags)| XsSection {
+                    rva,
+                    raw,
+                    size,
+                    flags,
+                },
+            )(current_section)
+        })(section_buffer)
     }
 }
 
